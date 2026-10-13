@@ -1,0 +1,81 @@
+---
+name: Release disk image
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Build disk image run ID to relay (empty = latest successful)"
+        required: false
+        default: ""
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  release:
+    name: Relay artifact to Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Resolve source run
+        id: src
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_RUN_ID}" ]; then
+            RUN_ID="${INPUT_RUN_ID}"
+          else
+            RUN_ID=$(gh run list \
+              --workflow "Build disk image" \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+          fi
+          echo "run_id=${RUN_ID}" >> "${GITHUB_OUTPUT}"
+          echo "Relaying artifacts from run ${RUN_ID}"
+
+      - name: Download disk image artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          mkdir -p relay && cd relay
+          gh run download "${{ steps.src.outputs.run_id }}" \
+            --name armada-disk-image \
+            --repo "${{ github.repository }}"
+          ls -lh
+          # Sanity check: expect the img.gz and its sha256 sidecar.
+          img=$(ls armada-*.img.gz)
+          [ -s "${img}" ]
+          [ -s "${img}.sha256" ] || [ -s "${img%.*}.sha256" ]
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          cd relay
+          img=$(ls armada-*.img.gz)
+          version="${img%.img.gz}"
+          TAG="disk-${{ steps.src.outputs.run_id }}"
+          DATE=$(date -u +%Y-%m-%d)
+          # Release tag must reference a commit; point it at default branch head.
+          gh release create "${TAG}" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.event.repository.default_branch }}" \
+            --title "${version} (${DATE})" \
+            --notes "Disk image built by Actions run ${{ steps.src.outputs.run_id }}.
+
+          Includes Odin 2 Mini sleep-drain fix (kernel patches 0058a / 0059a).
+
+          Flash with balenaEtcher/Rufus (accepts .img.gz directly) or:
+          \`zcat ${img} | sudo dd of=/dev/sdX bs=4M status=progress\`
+          " || gh release view "${TAG}" --repo "${{ github.repository }}"
+          gh release upload "${TAG}" ${img} ${img}.sha256 \
+            --repo "${{ github.repository }}" --clobber
+          gh release view "${TAG}" --repo "${{ github.repository }}" \
+            --json assets --jq '.assets[] | {name, size}'
