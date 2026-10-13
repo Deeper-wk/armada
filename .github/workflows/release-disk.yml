@@ -30,6 +30,7 @@ jobs:
           else
             RUN_ID=$(gh run list \
               --workflow "Build disk image" \
+              --repo "${{ github.repository }}" \
               --status success \
               --limit 1 \
               --json databaseId \
@@ -48,10 +49,13 @@ jobs:
             --name armada-disk-image \
             --repo "${{ github.repository }}"
           ls -lh
-          # Sanity check: expect the img.gz and its sha256 sidecar.
-          img=$(ls armada-*.img.gz)
-          [ -s "${img}" ]
-          [ -s "${img}.sha256" ] || [ -s "${img%.*}.sha256" ]
+          # Sanity check: expect the img.gz and its sha256 sidecar (name may end
+          # in .img.gz.sha256 or .img.sha256 depending on packaging).
+          shopt -s nullglob
+          imgs=(armada-*.img.gz)
+          [ "${#imgs[@]}" -eq 1 ] && [ -s "${imgs[0]}" ]
+          shasum=(armada-*.sha256)
+          [ "${#shasum[@]}" -ge 1 ] && [ -s "${shasum[0]}" ]
 
       - name: Create release and upload assets
         env:
@@ -75,7 +79,8 @@ jobs:
           Flash with balenaEtcher/Rufus (accepts .img.gz directly) or:
           \`zcat ${img} | sudo dd of=/dev/sdX bs=4M status=progress\`
           " || gh release view "${TAG}" --repo "${{ github.repository }}"
-          gh release upload "${TAG}" ${img} ${img}.sha256 \
+          shopt -s nullglob
+          gh release upload "${TAG}" armada-*.img.gz armada-*.sha256 \
             --repo "${{ github.repository }}" --clobber
           gh release view "${TAG}" --repo "${{ github.repository }}" \
             --json assets --jq '.assets[] | {name, size}'
