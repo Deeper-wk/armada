@@ -67,20 +67,47 @@ jobs:
           version="${img%.img.gz}"
           TAG="disk-${{ steps.src.outputs.run_id }}"
           DATE=$(date -u +%Y-%m-%d)
+
+          # GitHub caps release assets at 2 GiB; split into 1.9 GiB volumes.
+          shopt -s nullglob
+          parts=("${img}".part-*)
+          if [ "${#parts[@]}" -eq 0 ]; then
+            split -b 1900M -d -a 2 "${img}" "${img}.part-"
+          fi
+          sha256sum "${img}" > "${img}.parts.sha256"
+          {
+            echo "Disk image built by Actions run ${{ steps.src.outputs.run_id }}."
+            echo ""
+            echo "Includes Odin 2 Mini sleep-drain fix (kernel patches 0058a / 0059a)."
+            echo ""
+            echo "The image is split into parts (GitHub 2 GiB asset limit)."
+            echo "Rejoin after downloading all parts, then flash:"
+            echo ""
+            echo "  Linux/macOS:  cat ${img}.part-* > ${img}"
+            echo "  Windows cmd:  copy /b ${img}.part-00+${img}.part-01+... ${img}"
+            echo ""
+            echo "Verify integrity (sha256 of the rejoined file):"
+            echo "  sha256sum -c ${img}.parts.sha256   # or compare with the .sha256 content"
+            echo ""
+            echo "Flash with balenaEtcher/Rufus (accepts .img.gz directly) or:"
+            echo "  zcat ${img} | sudo dd of=/dev/sdX bs=4M status=progress"
+          } > RELEASE_NOTES.md
+
           # Release tag must reference a commit; point it at default branch head.
           gh release create "${TAG}" \
             --repo "${{ github.repository }}" \
             --target "${{ github.event.repository.default_branch }}" \
             --title "${version} (${DATE})" \
-            --notes "Disk image built by Actions run ${{ steps.src.outputs.run_id }}.
+            --notes-file RELEASE_NOTES.md \
+            || gh release view "${TAG}" --repo "${{ github.repository }}"
 
-          Includes Odin 2 Mini sleep-drain fix (kernel patches 0058a / 0059a).
-
-          Flash with balenaEtcher/Rufus (accepts .img.gz directly) or:
-          \`zcat ${img} | sudo dd of=/dev/sdX bs=4M status=progress\`
-          " || gh release view "${TAG}" --repo "${{ github.repository }}"
-          shopt -s nullglob
-          gh release upload "${TAG}" armada-*.img.gz armada-*.sha256 \
+          gh release upload "${TAG}" \
+            "${img}".part-* "${img}.parts.sha256" ${img}.sha256 RELEASE_NOTES.md \
             --repo "${{ github.repository }}" --clobber
+          # Remove the huge blob from the workspace so the runner isn't billed
+          # for keeping it around during post-job cleanup.
+          rm -f "${img}" "${img}".part-*
+          gh release view "${TAG}" --repo "${{ github.repository }}" \
+            --json assets --jq '.assets[] | {name, size}'
           gh release view "${TAG}" --repo "${{ github.repository }}" \
             --json assets --jq '.assets[] | {name, size}'
